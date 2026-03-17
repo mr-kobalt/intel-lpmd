@@ -86,10 +86,10 @@
         options.services.intel-lpmd = {
           enable = lib.mkEnableOption "Intel Low Power Mode Daemon";
           package = lib.mkOption {
-            type = lib.types.package;
+            type = with lib.types; nullOr package;
             default = null;
             description = "The intel-lpmd package to use";
-            example = lib.literalExpression "pkgs.intel-lpmd";
+            example = lib.literalExpression "intel-lpmd.packages.${pkgs.system}.default";
           };
           configFile = lib.mkOption {
             type = with lib.types; nullOr (oneOf [ path str ]);
