@@ -30,18 +30,26 @@ in {
       pkgs.writeText "intel-lpmd-config.xml" (if lib.isString cfg.configFile then cfg.configFile else builtins.readFile cfg.configFile)
     else null;
   in {
+    environment.systemPackages = [ package ];
+
     system.activationScripts.intel-lpmd-config = lib.stringAfter [ "etc" ] ''
       mkdir -p ${configDir}
-      # Symlink all config files from package
-      for f in ${package}/etc/intel_lpmd/*.xml; do
-        bn=$(basename "$f")
-        if [ ! -e ${configDir}/"$bn" ]; then
-          ln -sf "$f" ${configDir}/"$bn"
-        fi
-      done
-      # Override default config if custom config provided
+      
+      # Remove any existing symlinks in the directory
+      find ${configDir} -maxdepth 1 -type l -name "*.xml" -delete
+      
       ${lib.optionalString (configFile != null) ''
+        # User provided custom config: only symlink their config as intel_lpmd_config.xml
         ln -sf ${configFile} ${configDir}/intel_lpmd_config.xml
+        echo "Using custom intel-lpmd configuration: ${configFile}"
+      ''}
+      ${lib.optionalString (configFile == null) ''
+        # No custom config: symlink all default configs from package
+        for f in ${package}/etc/intel_lpmd/*.xml; do
+          bn=$(basename "$f")
+          ln -sf "$f" ${configDir}/"$bn"
+        done
+        echo "Using default intel-lpmd configurations from package"
       ''}
     '';
 
@@ -61,9 +69,8 @@ in {
         StateDirectory = "intel_lpmd";
         RuntimeDirectory = "intel_lpmd";
       };
-      environment = {
-        TDCONFDIR = configDir;
-      };
+      # TDCONFDIR is compiled into the binary as /etc/intel_lpmd
+      # No need to set environment variable
     };
   });
 }

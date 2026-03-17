@@ -215,13 +215,53 @@ Import the flake module in your NixOS configuration:
 
 The module automatically:
 - Enables the systemd service with proper D-BUS integration
-- Symlinks all configuration files to `/etc/intel_lpmd/`
-- Sets the `TDCONFDIR` environment variable for the daemon
+- Symlinks configuration files to `/etc/intel_lpmd/` (all defaults, or only custom config if provided)
+- Creates `/run/intel_lpmd` runtime directory via systemd's RuntimeDirectory
+- Compiles the daemon with `/etc/intel_lpmd` as the configuration directory (no environment variable needed)
 
 **Note for non-default systems**: If building for a system not included in the flake's default outputs (aarch64-linux, aarch64-darwin, x86_64-linux, x86_64-darwin), you must explicitly set the package:
 ```nix
 services.intel-lpmd.package = intel-lpmd.packages.${pkgs.system}.default;
 ```
+
+### Testing
+
+To test the daemon manually after building:
+
+```bash
+# Build the package
+nix build
+
+# Run the daemon with help to verify paths
+./result/bin/intel_lpmd --help
+
+# Test the NixOS module evaluation
+nix eval .#nixosModules.default
+```
+
+### Patches and Fixes
+
+The Nix flake includes several patches to improve compatibility and resolve common issues:
+
+**ITMT Path Resolution (Issue #71)**
+- **Problem**: Newer Linux kernels moved `/proc/sys/kernel/sched_itmt_enabled` to `/sys/kernel/debug/x86/sched_itmt_enabled`
+- **Solution**: Dynamic path resolution that checks both locations with fallback
+- **Impact**: Eliminates "Open /proc/sys/kernel/sched_itmt_enabled failed" errors
+
+**Error Logging Improvements**
+- **Problem**: `lpmd_read_int()`, `lpmd_write_int()`, and `_write_str()` log errors even when `print_level = -1`
+- **Solution**: Patched to respect `print_level` parameter (only log errors when `print_level >= 0`)
+- **Impact**: Reduces unnecessary log noise for optional features like ITMT
+
+**Configuration Priority**
+- **Problem**: User custom configurations competed with default configs
+- **Solution**: When `configFile` is provided, only the user's config is symlinked
+- **Impact**: Ensures user configuration takes precedence over defaults
+
+**Runtime Directory Fixes**
+- **Problem**: Daemon attempted to create directories in read-only Nix store
+- **Solution**: Patched `TDRUNDIR` to `/run/intel_lpmd` and `TDCONFDIR` to `/etc/intel_lpmd`
+- **Impact**: Eliminates "Cannot create directory: Read-only filesystem" errors
 
 ## Credits
 
