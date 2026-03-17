@@ -1,0 +1,43 @@
+# Nix build artifacts
+result
+result-*
+
+# Editor files
+*.swp
+*.swo
+*~
+\#*\#
+.\#*
+
+# Build directories
+*.o
+*.so
+*.a
+.deps/
+.dirstamp
+.libs/
+*.la
+*.lo
+*.log
+Makefile
+Makefile.in
+aclocal.m4
+autom4te.cache/
+compile
+config.guess
+config.h
+config.h.in
+config.log
+config.status
+config.sub
+configure
+depcomp
+install-sh
+intltool-*
+libtool
+ltmain.sh
+missing
+mkinstalldirs
+stamp-h1
+test-driver
+*.trs

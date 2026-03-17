@@ -2,6 +2,8 @@
 
 Intel Low Power Mode Daemon (lpmd) is a Linux daemon designed to optimize active idle power. It selects the most power-efficient CPUs based on a configuration file or CPU topology. Depending on system utilization and other hints, it puts the system into Low Power Mode by activating the power-efficient CPUs and disabling the rest, and restores the system from Low Power Mode by activating all CPUs.
 
+> **Nix/Flake support**: This repository includes a Nix flake for building and NixOS integration. See [Nix/Flake Support](#nixflake-support) section for details.
+
 ## Usage
 
 Refer to the man pages for command line arguments and XML configurations:
@@ -160,6 +162,70 @@ Run a workload and monitor `lpmd` to ensure it puts the system in the appropriat
 ### Release 0.0.1
 
 - Add initial lpmd support.
+
+## Nix/Flake Support
+
+> **Note**: The Nix flake and NixOS module are community additions and not officially supported by Intel.
+
+This repository includes a Nix flake for building and integrating `intel-lpmd` with NixOS.
+
+### Building with Nix
+
+```bash
+# Build the package
+nix build
+
+# Enter development shell with all build dependencies
+nix develop
+
+# Run the built daemon
+./result/bin/intel_lpmd --help
+```
+
+### NixOS Integration
+
+Import the flake module in your NixOS configuration:
+
+```nix
+{
+  inputs.intel-lpmd.url = "github:yourusername/intel-lpmd";
+
+  outputs = { self, nixpkgs, intel-lpmd }: {
+    nixosConfigurations.yourhost = nixpkgs.lib.nixosSystem {
+      modules = [
+        intel-lpmd.nixosModules.default
+        {
+          services.intel-lpmd = {
+            enable = true;
+            # Optional: custom XML configuration
+            # configFile = ./custom-config.xml;
+          };
+        }
+      ];
+    };
+  };
+}
+```
+
+### Module Options
+
+- `services.intel-lpmd.enable` (boolean): Enable the Intel LPMD daemon service
+- `services.intel-lpmd.package` (package): Override the intel-lpmd package (defaults to the flake's package for the current system)
+- `services.intel-lpmd.configFile` (path or string): Custom XML configuration file (see `man intel_lpmd_config.xml`)
+
+The module automatically:
+- Enables the systemd service with proper D-BUS integration
+- Symlinks all configuration files to `/etc/intel_lpmd/`
+- Sets the `TDCONFDIR` environment variable for the daemon
+
+**Note for non-default systems**: If building for a system not included in the flake's default outputs (aarch64-linux, aarch64-darwin, x86_64-linux, x86_64-darwin), you must explicitly set the package:
+```nix
+services.intel-lpmd.package = intel-lpmd.packages.${pkgs.system}.default;
+```
+
+## Credits
+
+The Nix flake and NixOS module implementation was created by Deepseek Reasoner using OpenCode.
 
 ## Security
 
