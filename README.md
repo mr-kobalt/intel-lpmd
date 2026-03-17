@@ -188,7 +188,7 @@ Import the flake module in your NixOS configuration:
 
 ```nix
 {
-  inputs.intel-lpmd.url = "github:yourusername/intel-lpmd";
+  inputs.intel-lpmd.url = "github:mr-kobalt/intel-lpmd";
 
   outputs = { self, nixpkgs, intel-lpmd }: {
     nixosConfigurations.yourhost = nixpkgs.lib.nixosSystem {
