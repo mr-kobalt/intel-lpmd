@@ -243,10 +243,10 @@ nix eval .#nixosModules.default
 
 The Nix flake includes several patches to improve compatibility and resolve common issues:
 
-**ITMT Path Resolution (Issue #71)**
-- **Problem**: Newer Linux kernels moved `/proc/sys/kernel/sched_itmt_enabled` to `/sys/kernel/debug/x86/sched_itmt_enabled`
-- **Solution**: Dynamic path resolution that checks both locations with fallback
-- **Impact**: Eliminates "Open /proc/sys/kernel/sched_itmt_enabled failed" errors
+**ITMT Interface (Issue #71)**
+- **Problem**: Newer Linux kernels moved `/proc/sys/kernel/sched_itmt_enabled` to `/sys/kernel/debug/x86/sched_itmt_enabled` and changed the interface format from integer (`0`/`1`) to character (`Y`/`N`)
+- **Solution**: Dynamic path resolution that checks both locations with fallback, plus format detection and conversion
+- **Impact**: Eliminates "Open /proc/sys/kernel/sched_itmt_enabled failed" errors and ensures proper ITMT control on both old and new kernels
 
 **Error Logging Improvements**
 - **Problem**: `lpmd_read_int()`, `lpmd_write_int()`, and `_write_str()` log errors even when `print_level = -1`

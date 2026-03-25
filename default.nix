@@ -20,6 +20,8 @@ pkgs.stdenv.mkDerivation rec {
     upower
   ];
 
+  patches = [ ./patches/itmt-format.patch ];
+
   configureFlags = [
     "--with-systemdsystemunitdir=${placeholder "out"}/lib/systemd/system"
     "--with-dbus-sys-dir=${placeholder "out"}/share/dbus-1/system.d"
@@ -68,32 +70,6 @@ pkgs.stdenv.mkDerivation rec {
       --replace 'lpmd_log_error ("%sWrite "%s" to %s failed, strlen %zu, ret %d\n", prefix, str, name,' \
                 'if (print_level >= 0) lpmd_log_error ("%sWrite "%s" to %s failed, strlen %zu, ret %d\n", prefix, str, name,'
 
-    # Add unistd.h include for access() in lpmd_misc.c
-    sed -i '/^#include "lpmd.h"/a #include <unistd.h>' src/lpmd_misc.c
-
-    # Replace ITMT path define with dynamic path resolution
-    # First remove any existing PATH_ITMT_CONTROL definition
-    sed -i '/#define PATH_ITMT_CONTROL/d' src/lpmd_misc.c
-    
-    # Insert new dynamic path resolution after the includes
-    sed -i '/^#include "lpmd.h"/a \
-/* ITMT Management */\
-static const char *get_itmt_path(void) {\
-    static const char *path = NULL;\
-    if (!path) {\
-        if (access("/proc/sys/kernel/sched_itmt_enabled", F_OK) == 0) {\
-            path = "/proc/sys/kernel/sched_itmt_enabled";\
-        } else {\
-            path = "/sys/kernel/debug/x86/sched_itmt_enabled";\
-        }\
-    }\
-    return path;\
-}\
-#define PATH_ITMT_CONTROL get_itmt_path()' src/lpmd_misc.c
-
-    # Replace PATH_ITMT_CONTROL macro usage with get_itmt_path() function calls
-    # The macro already does this, but ensure any direct usage is replaced
-    sed -i 's/"PATH_ITMT_CONTROL"/get_itmt_path()/g' src/lpmd_misc.c
   '';
 
   postInstall = "";

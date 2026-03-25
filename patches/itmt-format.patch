@@ -1,0 +1,163 @@
+--- a/src/lpmd_misc.c
++++ b/src/lpmd_misc.c
+@@ -21,7 +21,118 @@
+ #include "lpmd.h"
+ 
+ /* ITMT Management */
+-#define PATH_ITMT_CONTROL "/proc/sys/kernel/sched_itmt_enabled"
++#include <unistd.h>
++#include <string.h>
++#include <stdlib.h>
++
++static const char *get_itmt_path(void)
++{
++	static const char *path = NULL;
++	if (!path) {
++		if (access("/proc/sys/kernel/sched_itmt_enabled", F_OK) == 0) {
++			path = "/proc/sys/kernel/sched_itmt_enabled";
++		} else {
++			path = "/sys/kernel/debug/x86/sched_itmt_enabled";
++		}
++	}
++	return path;
++}
++
++/* Detect format of ITMT control file: 0 = integer (0/1), 1 = character (Y/N) */
++static int detect_itmt_format(void)
++{
++	FILE *f;
++	char buf[8];
++	const char *path = get_itmt_path();
++	
++	f = fopen(path, "r");
++	if (!f)
++		return -1;
++	
++	if (fgets(buf, sizeof(buf), f) == NULL) {
++		fclose(f);
++		return -1;
++	}
++	fclose(f);
++	
++	/* Trim newline */
++	buf[strcspn(buf, "\n")] = '\0';
++	
++	if (strcmp(buf, "0") == 0 || strcmp(buf, "1") == 0)
++		return 0; /* integer format */
++	else if (strcmp(buf, "N") == 0 || strcmp(buf, "Y") == 0)
++		return 1; /* character format */
++	else
++		return -1; /* unknown format */
++}
++
++static int read_itmt(int *val)
++{
++	static int format = -1;
++	const char *path = get_itmt_path();
++	FILE *f;
++	char buf[8];
++	
++	if (format == -1) {
++		format = detect_itmt_format();
++		if (format < 0)
++			return -1;
++	}
++	
++	f = fopen(path, "r");
++	if (!f)
++		return -1;
++	
++	if (fgets(buf, sizeof(buf), f) == NULL) {
++		fclose(f);
++		return -1;
++	}
++	fclose(f);
++	
++	buf[strcspn(buf, "\n")] = '\0';
++	
++	if (format == 0) {
++		/* integer format */
++		*val = atoi(buf);
++	} else {
++		/* character format */
++		*val = (buf[0] == 'Y') ? 1 : 0;
++	}
++	return 0;
++}
++
++static int write_itmt(int val)
++{
++	static int format = -1;
++	const char *path = get_itmt_path();
++	FILE *f;
++	
++	if (format == -1) {
++		format = detect_itmt_format();
++		if (format < 0)
++			return -1;
++	}
++	
++	f = fopen(path, "w");
++	if (!f)
++		return -1;
++	
++	if (format == 0) {
++		/* integer format */
++		if (fprintf(f, "%d", val) <= 0) {
++			fclose(f);
++			return -1;
++		}
++	} else {
++		/* character format */
++		if (fprintf(f, "%c", val ? 'Y' : 'N') <= 0) {
++			fclose(f);
++			return -1;
++		}
++	}
++	fclose(f);
++	return 0;
++}
+ 
+ static int has_itmt;
+ static int saved_itmt = SETTING_IGNORE;
+@@ -29,21 +140,22 @@
+ int get_itmt(void)
+ {
+ 	int val;
++	int ret;
+ 
+ 	if (!has_itmt)
+ 		return -1;
+ 
+-	lpmd_read_int(PATH_ITMT_CONTROL, &val, -1);
+-	return val;
++	ret = read_itmt(&val);
++	return (ret == 0) ? val : -1;
+ }
+ 
+ int itmt_init(void)
+ {
+-	if (lpmd_read_int(PATH_ITMT_CONTROL, &saved_itmt, -1))
++	if (read_itmt(&saved_itmt)) {
+ 		lpmd_log_debug("ITMT not detected\n");
+-	else
++	} else {
+ 		has_itmt = 1;
+-
++	}
+ 	return 0;
+ }
+ 
+@@ -57,10 +169,10 @@
+ 			lpmd_log_debug("Ignore ITMT\n");
+ 			return 0;
+ 		case SETTING_RESTORE:
+-			return lpmd_write_int(PATH_ITMT_CONTROL, saved_itmt, -1);
++			return write_itmt(saved_itmt);
+ 		default:
+ 			lpmd_log_debug ("%s ITMT\n", state->itmt_state ? "Enable" : "Disable");
+-			return lpmd_write_int(PATH_ITMT_CONTROL, state->itmt_state, -1);
++			return write_itmt(state->itmt_state);
+ 	}
+ }
+ 
