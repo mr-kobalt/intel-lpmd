@@ -1,22 +1,5 @@
-/*
- * intel_lpmd.h: Intel Low Power Daemon common header file
- *
- * Copyright (C) 2023 Intel Corporation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+
 #ifndef LPMD_INTEL_LPMD_H
 #define LPMD_INTEL_LPMD_H
 
@@ -50,6 +33,27 @@
 #include <glib/gi18n.h>
 #include <gmodule.h>
 
+extern gint watcher_id;
+extern gchar *config_file_path;
+
+extern int hfi_timeout;
+extern bool going_back_to_perf;
+
+enum hfi_timeout_states {
+	/* After init or staying in LPM */
+	HFI_TIMEOUT_LP,
+	/* Went into CPUMASK_ONLINE, primed and waiting for LP event */
+	HFI_TIMEOUT_PERF,
+	/* LP event happened, looping in poll() until hfi timeout doesn't run out */
+	HFI_TIMEOUT_TIMER,
+	/* A 'going to performance' event was caught and the switch to LPM is canceled */
+	HFI_TIMEOUT_FINAL,
+	/*
+	 * Timeout is over and no performance event was caught, applying the
+	 * cached LP cpumask.
+	 */
+	HFI_TIMEOUT_CACHED,
+};
 
 // Log macros
 enum log_level {
@@ -73,6 +77,7 @@ static int dummy_printf(const char *__restrict __format, ...)
 {
 	return 0;
 }
+
 #define lpmd_log_fatal		printf
 #define lpmd_log_error		printf
 #define lpmd_log_warn		printf
@@ -82,29 +87,44 @@ static int dummy_printf(const char *__restrict __format, ...)
 #endif
 
 // Common return value defines
-#define LPMD_SUCCESS		0
-#define LPMD_ERROR		-1
+#define LPMD_SUCCESS			0
+#define LPMD_ERROR			-1
 #define LPMD_FATAL_ERROR		-2
+#define LPMD_CONFIGURATION_ERROR	-3
+
+/* Slider parameter types for explicit type-safe validation */
+enum slider_param_type {
+	SLIDER_TYPE_BALANCE,
+	SLIDER_TYPE_OFFSET,
+	SLIDER_TYPE_MAX
+};
+
+// Slider validation defines
+#define SLIDER_BALANCE_MIN	1
+#define SLIDER_BALANCE_MAX	5
+#define SLIDER_OFFSET_MIN	0
+#define SLIDER_OFFSET_MAX	6
 
 // Dbus related
 /* Well-known name for this service. */
-#define INTEL_LPMD_SERVICE_NAME        	"org.freedesktop.intel_lpmd"
-#define INTEL_LPMD_SERVICE_OBJECT_PATH 	"/org/freedesktop/intel_lpmd"
+#define INTEL_LPMD_SERVICE_NAME		"org.freedesktop.intel_lpmd"
+#define INTEL_LPMD_SERVICE_OBJECT_PATH	"/org/freedesktop/intel_lpmd"
 #define INTEL_LPMD_SERVICE_INTERFACE	"org.freedesktop.intel_lpmd"
 
-typedef enum {
-	TERMINATE, LPM_FORCE_ON, LPM_FORCE_OFF, LPM_AUTO, HFI_EVENT,
-} message_name_t;
+enum message_name_t {
+	TERMINATE, LPM_FORCE_ON, LPM_FORCE_OFF, LPM_AUTO, LPM_PROCESS_PRECONFIG, HFI_EVENT,
+};
 
 #define MAX_MSG_SIZE		512
 
-typedef struct {
-	message_name_t msg_id;
+struct message_capsul_t {
+	enum message_name_t msg_id;
 	int msg_size;
 	unsigned long msg[MAX_MSG_SIZE];
-} message_capsul_t;
+};
 
 #define MAX_STR_LENGTH		256
+#define MAX_FILE_NAME_PATH	128
 #define MAX_CONFIG_STATES	10
 #define MAX_STATE_NAME		32
 #define MAX_CONFIG_LEN		64
@@ -113,6 +133,7 @@ enum lpmd_states {
 	LPMD_OFF,
 	LPMD_ON,
 	LPMD_AUTO,
+	LPMD_PROCESS_PRECONFIG,
 	LPMD_FREEZE,
 	LPMD_RESTORE,
 	LPMD_TERMINATE,
@@ -124,16 +145,17 @@ enum lpmd_update_reason {
 	UPDATE_HFI,
 	UPDATE_CPUHOTPLUG,
 	UPDATE_WLT,
+	UPDATE_STATE,
 };
 
-typedef struct {
+struct lpmd_data_t {
 	int util_cpu;	/* From Util monitor */
 	int util_sys;	/* From Util monitor */
 	int util_gfx;	/* From Util monitor */
 	int wlt_hint;	/* From WLT monitor */
 	int polling_interval;
 	int need_update;
-}lpmd_data_t;
+};
 
 enum default_config_state {
 	DEFAULT_OFF,	/* lpmd force off: state with all default power settings */
@@ -144,36 +166,87 @@ enum default_config_state {
 	STATE_NONE = MAX_STATES,
 };
 
-typedef struct {
+#define CORE_TYPES_COUNT 3
+enum core_type {
+	P_CORE,
+	E_CORE,
+	L_CORE
+};
+
+#define NUM_USER_CPUMASKS	10
+enum cpumask_idx {
+	CPUMASK_LPM_DEFAULT,
+	CPUMASK_ONLINE,
+	CPUMASK_HFI,
+	CPUMASK_HFI_BANNED,
+	CPUMASK_HFI_LAST,
+	CPUMASK_HFI_CACHED,
+	/*
+	 * Largest LP set currently being "held" to avoid ping-ponging between
+	 * LP cpumasks of different sizes. Only written by LPM events (never by
+	 * BANNED events, whose mask is ONLINE minus banned and not an LP set).
+	 */
+	CPUMASK_HFI_LP_HELD,
+	/*
+	 * Candidate smaller LP set seen while an LP set is held. Used to
+	 * count consecutive identical smaller hints before shrinking the held
+	 * set to it (see DEF_HFI_LP_SHRINK_COUNT).
+	 */
+	CPUMASK_HFI_LP_SHRINK,
+	CPUMASK_UTIL,
+	CPUMASK_BLACKLIST,
+	CPUMASK_USER,
+	CPUMASK_MAX = CPUMASK_USER + NUM_USER_CPUMASKS,
+	CPUMASK_NONE = CPUMASK_MAX,
+};
+
+#define LPMD_PERF_SCOPE_GLOBAL	0U
+#define LPMD_PERF_SCOPE_P	(1U << P_CORE)
+#define LPMD_PERF_SCOPE_E	(1U << E_CORE)
+#define LPMD_PERF_SCOPE_L	(1U << L_CORE)
+#define LPMD_PERF_SCOPE_ALL	(LPMD_PERF_SCOPE_P | LPMD_PERF_SCOPE_E | LPMD_PERF_SCOPE_L)
+
+struct lpmd_config_state_t {
 	int id;
 	int valid;
 	char name[MAX_STATE_NAME];
 	int wlt_type;
+	int wlt_type_mask;
 	int entry_system_load_thres;
 	int exit_system_load_thres;
 	int exit_system_load_hyst;
 	int enter_cpu_load_thres;
 	int exit_cpu_load_thres;
+	int exit_cpu_load_hyst;
 	int enter_gfx_load_thres;
 	int exit_gfx_load_thres;
+	int exit_gfx_load_hyst;
 	int min_poll_interval;
 	int max_poll_interval;
 	int poll_interval_increment;
 	int epp;
 	int epb;
+	int min_perf_pct_ac;
+	int min_perf_pct_dc;
+	int max_perf_pct_ac;
+	int max_perf_pct_dc;
+	unsigned int min_perf_pct_scope_ac;
+	unsigned int min_perf_pct_scope_dc;
+	unsigned int max_perf_pct_scope_ac;
+	unsigned int max_perf_pct_scope_dc;
+	int max_perf_pct_is_scoped_ac;
+	int max_perf_pct_is_scoped_dc;
 	char active_cpus[MAX_STR_LENGTH];
 	// If active CPUs are specified then
 	// the below counts don't matter
-	int island_0_number_p_cores;
-	int island_0_number_e_cores;
-	int island_1_number_p_cores;
-	int island_1_number_e_cores;
-	int island_2_number_p_cores;
-	int island_2_number_e_cores;
+	char active_p_cores[MAX_STR_LENGTH];
+	char active_e_cores[MAX_STR_LENGTH];
+	char active_l_cores[MAX_STR_LENGTH];
 
 	int itmt_state;
 	int irq_migrate;
 
+	/* balance: 1-5, offset: 0-6, or -1 to disable */
 	int balance_slider_ac;
 	int slider_offset_ac;
 	int balance_slider_dc;
@@ -182,21 +255,156 @@ typedef struct {
 	// Private state variables, not configurable
 	int entry_load_sys;
 	int entry_load_cpu;
+	int entry_load_gfx;
 	int cpumask_idx;
-	int steady;
-}lpmd_config_state_t;
+};
+
+enum lpmd_class_tuning_present_bits {
+	LPMD_CLASS_TUNE_MIN_PERF_PCT_AC = 1U << 0,
+	LPMD_CLASS_TUNE_MIN_PERF_PCT_DC = 1U << 1,
+	LPMD_CLASS_TUNE_MAX_PERF_PCT_AC = 1U << 2,
+	LPMD_CLASS_TUNE_MAX_PERF_PCT_DC = 1U << 3,
+	LPMD_CLASS_TUNE_BALANCE_SLIDER_AC = 1U << 4,
+	LPMD_CLASS_TUNE_BALANCE_SLIDER_DC = 1U << 5,
+	LPMD_CLASS_TUNE_SLIDER_OFFSET_AC = 1U << 6,
+	LPMD_CLASS_TUNE_SLIDER_OFFSET_DC = 1U << 7,
+	LPMD_CLASS_TUNE_GT_IA_BIAS = 1U << 8,
+};
+
+struct lpmd_class_tuning_override_t {
+	uint32_t present_mask;
+	int min_perf_pct_ac;
+	int min_perf_pct_dc;
+	int max_perf_pct_ac;
+	int max_perf_pct_dc;
+	unsigned int min_perf_pct_scope_ac;
+	unsigned int min_perf_pct_scope_dc;
+	unsigned int max_perf_pct_scope_ac;
+	unsigned int max_perf_pct_scope_dc;
+	int max_perf_pct_is_scoped_ac;
+	int max_perf_pct_is_scoped_dc;
+	int balance_slider_ac;
+	int balance_slider_dc;
+	int slider_offset_ac;
+	int slider_offset_dc;
+	uint32_t gt_ia_bias;
+};
 
 // lpmd config data
-typedef struct {
+struct lpmd_config_t {
 	int mode;
 	int performance_def;
 	int balanced_def;
 	int powersaver_def;
 	int hfi_lpm_enable;
 	int wlt_hint_enable;
+	int util_monitor;
+	int wlt_notification_delay;
 	int wlt_hint_poll_enable;
 	int wlt_proxy_enable;
 	int wlt_hint_mask;
+	int use_process_cpuset;
+
+	/* Optional per-CPU-model overrides for the process_cpuset.xml
+	 * <ClassDefaults> block. Populated when the matching <States>
+	 * stanza in intel_lpmd_config_*.xml contains a <ClassDefaults>
+	 * child. Empty strings mean "use the value from process_cpuset.xml
+	 * (or its built-in fallback)". Token syntax matches <ActiveCores>:
+	 * comma- or whitespace-separated "ActivePcores" / "ActiveEcores" /
+	 * "ActiveLcores". */
+	char pc_class_default_realtime[MAX_CONFIG_LEN];
+	char pc_class_default_user_interactive[MAX_CONFIG_LEN];
+	char pc_class_default_user_initiated[MAX_CONFIG_LEN];
+	char pc_class_default_unclassified[MAX_CONFIG_LEN];
+	char pc_class_default_utility[MAX_CONFIG_LEN];
+	char pc_class_default_background[MAX_CONFIG_LEN];
+	char pc_class_default_gp_cpu[MAX_CONFIG_LEN];
+	char pc_class_default_gp_gpu[MAX_CONFIG_LEN];
+	char pc_class_default_gp_hybrid[MAX_CONFIG_LEN];
+	char pc_class_default_custom_profile_0[MAX_CONFIG_LEN];
+	char pc_class_default_custom_profile_1[MAX_CONFIG_LEN];
+	char pc_class_default_custom_profile_2[MAX_CONFIG_LEN];
+
+	/* Optional per-class switch from <ClassDefaults> that requests the
+	 * selected class core map to become the global process-cpuset CPU
+	 * groups (P/E/LP-E), overriding the default groups from per-state
+	 * Active*Cores settings. */
+	int pc_class_override_global_cpu_realtime;
+	int pc_class_override_global_cpu_user_interactive;
+	int pc_class_override_global_cpu_user_initiated;
+	int pc_class_override_global_cpu_unclassified;
+	int pc_class_override_global_cpu_utility;
+	int pc_class_override_global_cpu_background;
+	int pc_class_override_global_cpu_gp_cpu;
+	int pc_class_override_global_cpu_gp_gpu;
+	int pc_class_override_global_cpu_gp_hybrid;
+	int pc_class_override_global_cpu_custom_profile_0;
+	int pc_class_override_global_cpu_custom_profile_1;
+	int pc_class_override_global_cpu_custom_profile_2;
+
+	/* Per-class override tracking: store which classes have
+	 * OverrideGlobalCPUSettings enabled, and their resolved cpumasks.
+	 * At runtime, the class with attached processes + most CPUs wins. */
+	struct {
+		const char *class_name;  /* e.g. "game_profile_gpu" */
+		enum cpumask_idx cpumask_idx;
+		int cpu_count;
+	} override_classes[13];  /* One per ClassDefaults type */
+	int override_classes_count;
+
+	/* Runtime tracking of currently active override.
+	 * Used to detect when override should change due to attached processes
+	 * detaching. */
+	enum cpumask_idx current_override_idx;
+	const char *current_override_class;
+	int current_override_cpu_count;
+	enum cpumask_idx saved_state_cpumask_idx;  /* Original cpumask before override applied */
+
+	/* Optional per-class uclamp overrides from <ClassDefaults> in
+	 * intel_lpmd_config_*.xml. LPMD_UCLAMP_INHERIT means "leave value
+	 * from process_cpuset.xml untouched"; LPMD_UCLAMP_DISABLE (-1) or
+	 * 0..1024 are explicit overrides. */
+	int pc_class_uclamp_min_realtime;
+	int pc_class_uclamp_max_realtime;
+	int pc_class_uclamp_min_user_interactive;
+	int pc_class_uclamp_max_user_interactive;
+	int pc_class_uclamp_min_user_initiated;
+	int pc_class_uclamp_max_user_initiated;
+	int pc_class_uclamp_min_unclassified;
+	int pc_class_uclamp_max_unclassified;
+	int pc_class_uclamp_min_utility;
+	int pc_class_uclamp_max_utility;
+	int pc_class_uclamp_min_background;
+	int pc_class_uclamp_max_background;
+	int pc_class_uclamp_min_gp_cpu;
+	int pc_class_uclamp_max_gp_cpu;
+	int pc_class_uclamp_min_gp_gpu;
+	int pc_class_uclamp_max_gp_gpu;
+	int pc_class_uclamp_min_gp_hybrid;
+	int pc_class_uclamp_max_gp_hybrid;
+	int pc_class_uclamp_min_custom_profile_0;
+	int pc_class_uclamp_max_custom_profile_0;
+	int pc_class_uclamp_min_custom_profile_1;
+	int pc_class_uclamp_max_custom_profile_1;
+	int pc_class_uclamp_min_custom_profile_2;
+	int pc_class_uclamp_max_custom_profile_2;
+
+	/* Optional per-class tuning overrides from <ClassDefaults>. These
+	 * are independent from <State> definitions. Each field is applied
+	 * only when the corresponding present bit is set, so omitted tags
+	 * leave existing settings untouched. */
+	struct lpmd_class_tuning_override_t pc_class_tuning_realtime;
+	struct lpmd_class_tuning_override_t pc_class_tuning_user_interactive;
+	struct lpmd_class_tuning_override_t pc_class_tuning_user_initiated;
+	struct lpmd_class_tuning_override_t pc_class_tuning_unclassified;
+	struct lpmd_class_tuning_override_t pc_class_tuning_utility;
+	struct lpmd_class_tuning_override_t pc_class_tuning_background;
+	struct lpmd_class_tuning_override_t pc_class_tuning_gp_cpu;
+	struct lpmd_class_tuning_override_t pc_class_tuning_gp_gpu;
+	struct lpmd_class_tuning_override_t pc_class_tuning_gp_hybrid;
+	struct lpmd_class_tuning_override_t pc_class_tuning_custom_profile_0;
+	struct lpmd_class_tuning_override_t pc_class_tuning_custom_profile_1;
+	struct lpmd_class_tuning_override_t pc_class_tuning_custom_profile_2;
 
 	union {
 		struct {
@@ -214,6 +422,8 @@ typedef struct {
 	int util_entry_hyst;
 	int util_exit_hyst;
 	int ignore_itmt;
+	/* 0: active, 1: passive */
+	int intel_pstate_mode;
 	int lp_mode_epp;
 	char lp_mode_cpus[MAX_STR_LENGTH];
 	int cpu_family;
@@ -221,61 +431,72 @@ typedef struct {
 	char cpu_config[MAX_CONFIG_LEN];
 	int config_state_count;
 	int tdp;
+	char file_name[MAX_FILE_NAME_PATH];
 
+	/* balance: 1-5, offset: 0-6, or -1 to disable */
 	int balance_slider_def_ac;
 	int slider_offset_def_ac;
 	int balance_slider_def_dc;
 	int slider_offset_def_dc;
 
-	lpmd_config_state_t config_states[MAX_STATES];
-	lpmd_data_t data;
-} lpmd_config_t;
+	bool config_states_present; 	/* Controls how and if hint sources interact */
+	bool config_states_hfi;		/* At least one state has HFI managed CPUs */
+	struct lpmd_config_state_t config_states[MAX_STATES];
+	struct lpmd_data_t data;
+	unsigned char *core_type_masks[CORE_TYPES_COUNT];
+};
 
 enum lpm_cpu_process_mode {
+	/*
+	 * No CPU restriction mechanism at all. State transitions still run and
+	 * every other knob (EPP/EPB, perf pct limits, slider, IRQ affinity) is
+	 * still applied, but nothing writes a cpuset: no cgroup controller is
+	 * enabled, no AllowedCPUs= is set on any systemd unit, and no LP-mode
+	 * CPU mask is applied -- including the masks computed from HFI.
+	 * This is the default.
+	 */
+	LPM_CPU_NONE = -1,
 	LPM_CPU_CGROUPV2,
 	LPM_CPU_ISOLATE,
 	LPM_CPU_POWERCLAMP,
 	LPM_CPU_OFFLINE,
+	LPM_CPU_MODE_MIN = LPM_CPU_NONE,
 	LPM_CPU_MODE_MAX = LPM_CPU_POWERCLAMP,
-};
-
-#define NUM_USER_CPUMASKS	10
-enum cpumask_idx {
-	CPUMASK_LPM_DEFAULT,
-	CPUMASK_ONLINE,
-	CPUMASK_HFI,
-	CPUMASK_HFI_BANNED,
-	CPUMASK_HFI_LAST,
-	CPUMASK_UTIL,
-	CPUMASK_USER,
-	CPUMASK_MAX = CPUMASK_USER + NUM_USER_CPUMASKS,
-	CPUMASK_NONE = CPUMASK_MAX,
 };
 
 #define UTIL_DELAY_MAX		5000
 #define UTIL_HYST_MAX		10000
 
-#define cpuid(leaf, eax, ebx, ecx, edx)		\
-	__cpuid(leaf, eax, ebx, ecx, edx);	\
-	lpmd_log_debug("CPUID 0x%08x: eax = 0x%08x ebx = 0x%08x ecx = 0x%08x edx = 0x%08x\n",	\
-			leaf, eax, ebx, ecx, edx);
+#define cpuid(leaf, eax, ebx, ecx, edx)									\
+	do {												\
+		__cpuid(leaf, eax, ebx, ecx, edx);							\
+		lpmd_log_debug("CPUID 0x%08x: eax = 0x%08x ebx = 0x%08x ecx = 0x%08x edx = 0x%08x\n",	\
+				leaf, eax, ebx, ecx, edx);						\
+	} while (0)
 
-#define cpuid_count(leaf, subleaf, eax, ebx, ecx, edx)		\
-	__cpuid_count(leaf, subleaf, eax, ebx, ecx, edx);	\
-	lpmd_log_debug("CPUID 0x%08x subleaf 0x%08x: eax = 0x%08x ebx = 0x%08x ecx = 0x%08x"	\
-			"edx = 0x%08x\n", leaf, subleaf, eax, ebx, ecx, edx);
+#define cpuid_count(leaf, subleaf, eax, ebx, ecx, edx)							\
+	do {												\
+		__cpuid_count(leaf, subleaf, eax, ebx, ecx, edx);					\
+		lpmd_log_debug("CPUID 0x%08x subleaf 0x%08x: eax = 0x%08x ebx = 0x%08x ecx = 0x%08x"	\
+				"edx = 0x%08x\n", leaf, subleaf, eax, ebx, ecx, edx);			\
+	} while (0)
 
 #define SETTING_RESTORE	-2
 #define SETTING_IGNORE	-1
 
+#define LPMD_UCLAMP_INHERIT	-2
+#define LPMD_UCLAMP_DISABLE	-1
+#define LPMD_UCLAMP_MIN	0
+#define LPMD_UCLAMP_MAX	1024
+
 /* WLT hints parsing */
-typedef enum {
+enum wlt_type_t {
 	WLT_IDLE = 0,
 	WLT_BATTERY_LIFE = 1,
 	WLT_SUSTAINED = 2,
 	WLT_BURSTY = 3,
 	WLT_INVALID = 4,
-} wlt_type_t;
+};
 
 enum power_profile_daemon_mode {
 	PPD_PERFORMANCE,
@@ -284,12 +505,21 @@ enum power_profile_daemon_mode {
 	PPD_INVALID
 };
 
+#define DEF_POLLING_INTERVAL	100
+#define DEF_HFI_TIMEOUT		1000
+/*
+ * Number of consecutive LP hints that must agree on a smaller LP set before
+ * the held LP set is allowed to shrink to it. Guards against ping-ponging on
+ * a single transient smaller hint while still tracking a sustained change.
+ */
+#define DEF_HFI_LP_SHRINK_COUNT	5
+
 /* lpmd_main.c */
 int in_debug_mode(void);
 int do_platform_check(void);
 
 /* lpmd_proc.c: interfaces */
-lpmd_config_t *get_lpmd_config(void);
+struct lpmd_config_t *get_lpmd_config(void);
 
 int lpmd_lock(void);
 int lpmd_unlock(void);
@@ -298,9 +528,14 @@ void lpmd_terminate(void);
 void lpmd_force_on(void);
 void lpmd_force_off(void);
 void lpmd_set_auto(void);
+void lpmd_set_process_preconfig(void);
 
 int is_on_battery(void);
 int get_ppd_mode(void);
+void set_polling(int ms);
+void reset_polling(void);
+
+char *user_cpumask_idx_to_state_name(enum cpumask_idx idx);
 
 /* lpmd_proc.c: init func */
 int lpmd_main(void);
@@ -310,58 +545,82 @@ void update_reason(int reason);
 int intel_dbus_server_init(gboolean (*exit_handler)(void));
 
 /* lpmd_config.c */
-int lpmd_get_config(lpmd_config_t *lpmd_config);
+int match_config_file(int family, int model, int tdp, char *save_file_name);
+int lpmd_get_config(struct lpmd_config_t *lpmd_config);
+int is_wildcard(char *str);
+int exclude_incompatible_configs(struct lpmd_config_t *config);
 
 /* lpmd_state_machine.c */
 int update_lpmd_state(int state);
 int get_lpmd_state(void);
-int lpmd_init_config_state(lpmd_config_state_t *state);
-int lpmd_build_config_states(lpmd_config_t *config);
+int lpmd_init_config_state(struct lpmd_config_state_t *state);
+int lpmd_build_config_states(struct lpmd_config_t *config);
 int lpmd_enter_next_state(void);
 
 /* lpmd_util.c */
-int util_update(lpmd_config_t *lpmd_config);
+int util_update(struct lpmd_config_t *lpmd_config);
 
 /* lpmd_hfi.c */
 int hfi_init(void);
 int hfi_kill(void);
 int hfi_update(void);
+unsigned long hfi_time_delta(void);
+int hfi_timeout_over(int timeout_ms);
+void hfi_timeout_state_action(int state);
 
 /* lpmd_wlt.c */
 int wlt_init(void);
 int wlt_exit(void);
 int wlt_update(int fd);
+int wlt_set_notification_delay(int delay);
 
 /* lpmd_misc.c */
-int itmt_init(void);
+void itmt_init(void);
 int get_itmt(void);
-int process_itmt(lpmd_config_state_t *state);
+int process_itmt(struct lpmd_config_state_t *state);
+int process_intel_pstate_mode(struct lpmd_config_t *config);
+int restore_intel_pstate_mode(void);
 
 int epp_epb_init(void);
 int get_epp_epb(int *epp, char *epp_str, int size, int *epb);
-int process_epp_epb(lpmd_config_state_t *state);
+int process_epp_epb(struct lpmd_config_state_t *state);
+int min_perf_pct_init(void);
+int process_min_perf_pct(struct lpmd_config_state_t *state);
+int process_min_perf_pct_override(struct lpmd_config_state_t *state);
+int process_min_perf_pct_scoped(struct lpmd_config_state_t *state,
+				 unsigned int core_scope_mask);
+int max_perf_pct_init(void);
+int process_max_perf_pct(struct lpmd_config_state_t *state);
+int process_max_perf_pct_scoped(struct lpmd_config_state_t *state,
+				 unsigned int core_scope_mask);
 
-void process_balance_slider_default_update(lpmd_config_t *config);
-void process_slider_offset_default_update(lpmd_config_t *config);
-void process_slider(lpmd_config_t *config, lpmd_config_state_t *state);
+void process_balance_slider_default_update(struct lpmd_config_t *config);
+void process_slider_offset_default_update(struct lpmd_config_t *config);
+int process_balance_slider_only(struct lpmd_config_t *config,
+				       struct lpmd_config_state_t *state);
+int process_slider_offset_only(struct lpmd_config_t *config,
+				      struct lpmd_config_state_t *state);
+void process_slider(struct lpmd_config_t *config, struct lpmd_config_state_t *state);
 
 /* lpmd_irq.c */
 int irq_init(void);
-int process_irq(lpmd_config_state_t *state);
+void irq_cleanup(void);
+int process_irq(struct lpmd_config_state_t *state);
 
 /* lpmd_cgroup.c*/
-int cgroup_init(lpmd_config_t *config);
-int cgroup_cleanup(void);
-int process_cgroup(lpmd_config_state_t *state, enum lpm_cpu_process_mode mode);
+int cgroup_init(struct lpmd_config_t *config);
+int cgroup_cleanup(struct lpmd_config_t *config);
+int process_cgroup(struct lpmd_config_t *config, struct lpmd_config_state_t *state);
 
 /* lpmd_uevent.c */
 int uevent_init(void);
 int check_cpu_hotplug(void);
 
 /* lpmd_cpu.c */
-int detect_supported_platform(lpmd_config_t *lpmd_config);
-int detect_cpu_topo(lpmd_config_t *lpmd_config);
+int detect_supported_platform(struct lpmd_config_t *lpmd_config);
+int detect_cpu_topo(struct lpmd_config_t *lpmd_config);
 int detect_lpm_cpus(char *cmd_cpus);
+int get_tdp(void);
 
 int is_cpu_ecore(int cpu);
 int is_cpu_pcore(int cpu);
@@ -379,21 +638,58 @@ int cpumask_alloc(void);
 int cpumask_free(enum cpumask_idx idx);
 int cpumask_reset(enum cpumask_idx idx);
 
+void free_cpu_type_masks(struct lpmd_config_t *lpmd_config);
+int allocate_cpu_type_masks(struct lpmd_config_t *lpmd_config);
+
+/* lpmd_process_cpuset.c */
+int  lpmd_process_cpuset_init(struct lpmd_config_t *config);
+
+void lpmd_process_cpuset_uninit(void);
+void lpmd_process_cpuset_unbind_all(void);
+void lpmd_process_cpuset_rescan(void);
+void lpmd_process_cpuset_print_unbound(int user_only);
+void lpmd_process_cpuset_print_bound(void);
+int  lpmd_process_cpuset_add_process_ex(const char *name,
+					const char *classification,
+					int allow_session);
+int  lpmd_process_cpuset_add_process(const char *name, const char *classification);
+int  lpmd_process_cpuset_set_focus_pid(pid_t pid);
+int  lpmd_process_cpuset_set_focus_helper_present(int present);
+int  lpmd_process_cpuset_classify(const char *name, char *result, size_t result_cap);
+int  lpmd_process_cpuset_class_has_attached(const char *class_name);
+int  lpmd_process_cpuset_min_perf_pct_locked(void);
+int  lpmd_process_cpuset_balance_slider_locked(void);
+int  lpmd_process_cpuset_slider_offset_locked(void);
+const char *lpmd_process_cpuset_min_perf_pct_owner(void);
+const char *lpmd_process_cpuset_balance_slider_owner(void);
+const char *lpmd_process_cpuset_slider_offset_owner(void);
+
+/* Kernel proc-connector (event-driven classification). Returns the
+ * NETLINK_CONNECTOR fd to add to the main poll loop on success, or -1
+ * if the kernel feature is unavailable / lacks CAP_NET_ADMIN. */
+int  lpmd_process_cpuset_proc_connector_init(void);
+int  lpmd_process_cpuset_proc_connector_fd(void);
+void lpmd_process_cpuset_proc_connector_handle(void);
+void lpmd_process_cpuset_proc_connector_uninit(void);
+
 int cpumask_add_cpu(int cpu, enum cpumask_idx idx);
+int cpumask_blacklist(enum cpumask_idx idx);
 int cpumask_init_cpus(char *buf, enum cpumask_idx idx);
+int cpumask_init_cpus_type(char *buf, enum cpumask_idx idx, unsigned char **cmasks, enum core_type type);
 int cpumask_nr_cpus(enum cpumask_idx idx);
 int cpumask_has_cpu(enum cpumask_idx idx);
 
 int cpumask_equal(enum cpumask_idx idx1, enum cpumask_idx idx2);
 void cpumask_copy(enum cpumask_idx source, enum cpumask_idx dest);
-void cpumask_exclude_copy(enum cpumask_idx source, enum cpumask_idx dest, enum cpumask_idx exlude);
+void cpumask_or_copy(enum cpumask_idx source, enum cpumask_idx dest);
+void cpumask_exclude_copy(enum cpumask_idx source, enum cpumask_idx dest, enum cpumask_idx exclude);
 
-char *get_cpus_str(enum cpumask_idx idx);
-char* get_cpus_hexstr(enum cpumask_idx idx);
+char *get_cpus_str(enum cpumask_idx idx, bool refresh);
+char *get_cpus_hexstr(enum cpumask_idx idx, bool refresh);
 char *get_proc_irq_str(enum cpumask_idx idx);
 char *get_irqbalance_str(enum cpumask_idx idx);
 char *get_cpu_isolation_str(enum cpumask_idx idx);
-uint8_t *get_cgroup_systemd_vals(enum cpumask_idx idx, int *size);
+uint8_t *get_cgroup_systemd_vals(enum cpumask_idx idx);
 
 /* socket.c */
 int socket_init_connection(char *name);
@@ -408,8 +704,7 @@ int lpmd_write_str_append(const char *name, char *str, int print_level);
 int lpmd_write_int(const char *name, int val, int print_level);
 int lpmd_open(const char *name, int print_level);
 int lpmd_read_int(const char *name, int *val, int print_level);
-char* get_time(void);
-void time_start(void);
-char* time_delta(void);
+int lpmd_read_yn(const char *name, int *val, int print_level);
+int lpmd_write_yn(const char *name, int val, int print_level);
 uint64_t read_msr(int cpu, uint32_t msr);
 #endif

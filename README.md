@@ -1,10 +1,41 @@
 # Intel Low Power Mode Daemon
 
-Intel Low Power Mode Daemon (lpmd) is a Linux daemon designed to optimize active idle power. It selects the most power-efficient CPUs based on a configuration file or CPU topology. Depending on system utilization and other hints, it puts the system into Low Power Mode by activating the power-efficient CPUs and disabling the rest, and restores the system from Low Power Mode by activating all CPUs.
+Intel Low Power Mode Daemon (lpmd) is a Linux daemon designed to optimize active
+idle power. It selects the most power-efficient CPUs based on a configuration
+file or CPU topology. Depending on system utilization and other hints, it puts
+the system into Low Power Mode by activating the power-efficient CPUs and
+disabling the rest, and restores the system from Low Power Mode by activating
+all CPUs.
 
 > **Nix/Flake support**: This repository includes a Nix flake for building and NixOS integration. See [Nix/Flake Support](#nixflake-support) section for details.
 
-## Usage
+## Before You Start
+
+**Please note** that the installed configuration files serve as templates of
+best practices for specific platform models and disable lpmd by default.
+
+## Dynamic CPU Selection and Power Settings
+
+By default, some global power settings are enabled even if `intel_lpmd` is not active.
+However, dynamic CPU selection is not enabled by default; the reason being some
+benchmarks only use CPUs which are present when started, which may be restricted to a
+smaller cgroup cpuset.
+
+To drive dynamic CPU selection and power settings, there are two options:
+
+### Option 1: Enable Permanently (Configuration File)
+
+Configure the desired mode in the XML configuration file. For example, to configure behavior in **Balanced** mode, set `<BalancedDef>`:
+
+```xml
+<!--
+    Default behavior when Balanced power setting is used:
+    -1: Force off (never enter Low Power Mode)
+     1: Force on (always stay in Low Power Mode)
+     0: Auto (opportunistic Low Power Mode enter/exit)
+     2: Process-CPU affinity based Low Power Mode enter/exit
+-->
+<BalancedDef>0</BalancedDef>
 
 Refer to the man pages for command line arguments and XML configurations:
 
@@ -42,10 +73,13 @@ make
 sudo make install
 ```
 
-The generated artifacts are copied to respective directories under `/usr/local`. If a custom install path is preferred other than system default,  make sure `--localstatedir` and `--sysconfdir` are set to the right path that the system can understand. If installed via RPM then artifacts would be under `/usr`.
+The generated artifacts are copied to respective directories under `/usr/local`.
+If a custom install path is preferred other than system default,  make sure
+`--localstatedir` and `--sysconfdir` are set to the right path that the system
+can understand. If installed via RPM then artifacts would be under `/usr`.
 
-Example command for installation using prefix under `/opt/lpmd_install` dir with `--localstatedir` and `--sysconfdir` set to system default
-
+Example command for installation using prefix under `/opt/lpmd_install` dir with
+`--localstatedir` and `--sysconfdir` set to system default
 
 ```sh
 ./autogen.sh prefix=/opt/lpmd_install --localstatedir=/var --sysconfdir=/etc
@@ -89,10 +123,28 @@ Start `lpmd` using:
 sudo sh tests/lpm_test_interface.sh 4
 ```
 
-Run a workload and monitor `lpmd` to ensure it puts the system in the appropriate state based on the load.
-
+Run a workload and monitor `lpmd` to ensure it puts the system in the
+appropriate state based on the load.
 
 ## Releases
+
+### Release 0.1.1 (Test release, do not include in any distro release)
+- Add per-process CPU affinity support: processes are classified
+(user interactive, user initiated, utility, background, realtime,
+game and custom profiles) and confined to a selected set of CPUs
+with a new PROCESS-PRECONFIG mode and shipped process classification
+config files.
+- Add a desktop focus helper for  KDE based distribution for foreground
+application.
+- Add per-class and per-state tuning knobs: uclamp min/max,
+min/max performance percentage per core type, Intel P-State mode and
+graphics IA bias.
+- Allow HFI to specify CPUs and use with other state based configurations
+- Improve graphics utilization detection with load hysteresis and separate
+exit thresholds.
+- Extend the DBus interface and intel_lpmd_control with state query,
+process classification and cpuset management commands, restricted to root.'
+
 
 ### Release 0.1.0
 - Add support for Panther Lake
@@ -239,29 +291,14 @@ nix build
 nix eval .#nixosModules.default
 ```
 
-### Patches and Fixes
+### Nix-Specific Fixes
 
-The Nix flake includes several patches to improve compatibility and resolve common issues:
+The Nix package applies a few build-time adjustments that are specific to the Nix environment:
 
-**ITMT Interface (Issue #71)**
-- **Problem**: Newer Linux kernels moved `/proc/sys/kernel/sched_itmt_enabled` to `/sys/kernel/debug/x86/sched_itmt_enabled` and changed the interface format from integer (`0`/`1`) to character (`Y`/`N`)
-- **Solution**: Dynamic path resolution that checks both locations with fallback, plus format detection and conversion
-- **Impact**: Eliminates "Open /proc/sys/kernel/sched_itmt_enabled failed" errors and ensures proper ITMT control on both old and new kernels
+- **Runtime directories**: `TDRUNDIR` and `TDCONFDIR` are set to `/run/intel_lpmd` and `/etc/intel_lpmd` respectively, since the daemon cannot create directories in the read-only Nix store.
+- **Configuration priority**: When `configFile` is provided, only the user's config is symlinked, so it takes precedence over the packaged defaults.
 
-**Error Logging Improvements**
-- **Problem**: `lpmd_read_int()`, `lpmd_write_int()`, and `_write_str()` log errors even when `print_level = -1`
-- **Solution**: Patched to respect `print_level` parameter (only log errors when `print_level >= 0`)
-- **Impact**: Reduces unnecessary log noise for optional features like ITMT
-
-**Configuration Priority**
-- **Problem**: User custom configurations competed with default configs
-- **Solution**: When `configFile` is provided, only the user's config is symlinked
-- **Impact**: Ensures user configuration takes precedence over defaults
-
-**Runtime Directory Fixes**
-- **Problem**: Daemon attempted to create directories in read-only Nix store
-- **Solution**: Patched `TDRUNDIR` to `/run/intel_lpmd` and `TDCONFDIR` to `/etc/intel_lpmd`
-- **Impact**: Eliminates "Cannot create directory: Read-only filesystem" errors
+> **ITMT**: The ITMT interface fix for newer kernels (debugfs path and `Y`/`N` format) is provided upstream and no longer needs a separate patch.
 
 ## Credits
 

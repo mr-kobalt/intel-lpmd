@@ -2,7 +2,7 @@
 
 pkgs.stdenv.mkDerivation rec {
   pname = "intel-lpmd";
-  version = "0.1.0";
+  version = "0.1.1-test";
   src = ./.;
 
   nativeBuildInputs = with pkgs; [
@@ -20,8 +20,6 @@ pkgs.stdenv.mkDerivation rec {
     upower
   ];
 
-  patches = [ ./patches/itmt-format.patch ];
-
   configureFlags = [
     "--with-systemdsystemunitdir=${placeholder "out"}/lib/systemd/system"
     "--with-dbus-sys-dir=${placeholder "out"}/share/dbus-1/system.d"
@@ -30,46 +28,12 @@ pkgs.stdenv.mkDerivation rec {
   prePatch = ''
     # Remove gzip and mandb lines from install-data-hook
     sed -i '/^install-data-hook:/,/^[^[:space:]]/ { /gzip.*intel_lpmd\.8/d; /mandb/d; }' Makefile.am
-    
+
     # Patch runtime directories to use system paths instead of store paths
     # TDRUNDIR should be /run/intel_lpmd (created by systemd's RuntimeDirectory)
     # TDCONFDIR should be /etc/intel_lpmd (symlinked by activation script)
     sed -i 's|-DTDRUNDIR=\\"\$(lpmd_rundir)\\"|-DTDRUNDIR=\\"/run/intel_lpmd\\"|' Makefile.am
     sed -i 's|-DTDCONFDIR=\\"\$(lpmd_confdir)\\"|-DTDCONFDIR=\\"/etc/intel_lpmd\\"|' Makefile.am
-
-    # Fix error logging to respect print_level parameter
-    # Use substituteInPlace for robust replacements
-    
-    # lpmd_read_int: Open error
-    substituteInPlace src/lpmd_helpers.c \
-      --replace 'lpmd_log_error ("%sOpen %s failed\n", prefix, name);' \
-                'if (print_level >= 0) lpmd_log_error ("%sOpen %s failed\n", prefix, name);'
-    
-    # lpmd_read_int: Read error  
-    substituteInPlace src/lpmd_helpers.c \
-      --replace 'lpmd_log_error ("%sRead %s failed, ret %d\n", prefix, name, ret);' \
-                'if (print_level >= 0) lpmd_log_error ("%sRead %s failed, ret %d\n", prefix, name, ret);'
-    
-    # lpmd_write_int: Open error
-    substituteInPlace src/lpmd_helpers.c \
-      --replace 'lpmd_log_error ("%sOpen %s failed\n", prefix, name);' \
-                'if (print_level >= 0) lpmd_log_error ("%sOpen %s failed\n", prefix, name);'
-    
-    # lpmd_write_int: Write error
-    substituteInPlace src/lpmd_helpers.c \
-      --replace 'lpmd_log_error ("%sWrite "%d" to %s failed, ret %d\n", prefix, val, name, ret);' \
-                'if (print_level >= 0) lpmd_log_error ("%sWrite "%d" to %s failed, ret %d\n", prefix, val, name, ret);'
-    
-    # _write_str: Open error
-    substituteInPlace src/lpmd_helpers.c \
-      --replace 'lpmd_log_error ("%sOpen %s failed\n", prefix, name);' \
-                'if (print_level >= 0) lpmd_log_error ("%sOpen %s failed\n", prefix, name);'
-    
-    # _write_str: Write error (first line of multi-line)
-    substituteInPlace src/lpmd_helpers.c \
-      --replace 'lpmd_log_error ("%sWrite "%s" to %s failed, strlen %zu, ret %d\n", prefix, str, name,' \
-                'if (print_level >= 0) lpmd_log_error ("%sWrite "%s" to %s failed, strlen %zu, ret %d\n", prefix, str, name,'
-
   '';
 
   postInstall = "";

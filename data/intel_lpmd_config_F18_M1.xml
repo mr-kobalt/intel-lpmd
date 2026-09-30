@@ -12,6 +12,13 @@ for Intel Energy Optimizer (LPMD) daemon
 	<lp_mode_cpus></lp_mode_cpus>
 
 	<!--
+		EPP to use in Low Power Mode
+		0-255: Valid EPP value to use in Low Power Mode
+		   -1: Don't change EPP in Low Power Mode
+	-->
+	<lp_mode_epp></lp_mode_epp>
+
+	<!--
 		Mode values
 		-1: No cpuset mechanism. State transitions still happen and
 		    every other setting is still applied, but nothing writes
@@ -57,6 +64,27 @@ for Intel Energy Optimizer (LPMD) daemon
 	<HfiLpmEnable>0</HfiLpmEnable>
 
 	<!--
+		Use WLT hints
+		0 : No
+		1 : Yes
+	-->
+	<WLTHintEnable>1</WLTHintEnable>
+
+	<!--
+		Use WLT hint Poll enable
+		0 : No
+		1 : Yes
+	-->
+	<WLTHintPollEnable>0</WLTHintPollEnable>
+
+	<!--
+		Use WLT hint Mask
+		0 : Non
+		* : Value to AND with with the hardware hint
+	-->
+	<WLTHintMask>15</WLTHintMask>
+
+	<!--
 		Use HFI SUV hints
 		0 : No
 		1 : Yes
@@ -67,39 +95,39 @@ for Intel Energy Optimizer (LPMD) daemon
 		System utilization threshold to enter LP mode
 		from 0 - 100
 		clear both util_entry_threshold and util_exit_threshold to disable util monitor
+	<util_entry_threshold>0</util_entry_threshold>
 	-->
-	<util_entry_threshold>10</util_entry_threshold>
 
 	<!--
 		System utilization threshold to exit LP mode
 		from 0 - 100
 		clear both util_entry_threshold and util_exit_threshold to disable util monitor
+	<util_exit_threshold>0</util_exit_threshold>
 	-->
-	<util_exit_threshold>95</util_exit_threshold>
 
 	<!--
 		Entry delay. Minimum delay in non Low Power mode to
 		enter LPM mode.
-	-->
 	<EntryDelayMS>0</EntryDelayMS>
+	-->
 
 	<!--
 		Exit delay. Minimum delay in Low Power mode to
 		exit LPM mode.
-	-->
 	<ExitDelayMS>0</ExitDelayMS>
+	-->
 
 	<!--
 		Lowest hysteresis average in-LP-mode time in msec to enter LP mode
 		0: to disable hysteresis support
-	-->
 	<EntryHystMS>0</EntryHystMS>
+	-->
 
 	<!--
 		Lowest hysteresis average out-of-LP-mode time in msec to exit LP mode
 		0: to disable hysteresis support
-	-->
 	<ExitHystMS>0</ExitHystMS>
+	-->
 
 	<!--
 		Ignore ITMT setting during LP-mode enter/exit
@@ -116,15 +144,35 @@ for Intel Energy Optimizer (LPMD) daemon
 	<IntelPstateMode>0</IntelPstateMode>
 
 	<!--
-		Slider default configuration for AC and DC (for platforms after Panther Lake onwards)
-		These are default values used when platform-specific configs are unavailable.
-		AC: Plugged into power adapter
-		DC: Running on battery
+		Slider default configuration for AC and DC
 	-->
 	<BalancedSliderAC>1</BalancedSliderAC>
 	<BalancedSliderDC>3</BalancedSliderDC>
 	<SliderOffsetAC>0</SliderOffsetAC>
 	<SliderOffsetDC>3</SliderOffsetDC>
 
-</Configuration>
+	<States>
+		<CPUFamily> 18 </CPUFamily>
+		<CPUModel> 1 </CPUModel>
+		<CPUConfig> * </CPUConfig>
+		<State>
+			<ID> 1 </ID>
+			<Name> UTIL_IDLE </Name>
+			<WLTType> 1 </WLTType>
+			<ActiveLcores>ALL</ActiveLcores>
+		</State>
+		<State>
+			<ID> 2 </ID>
+			<Name> UTIL_IDLE_SUSTAIN </Name>
+			<WLTType> 2 </WLTType>
+			<ActiveCPUs> * </ActiveCPUs>
+		</State>
+		<State>
+			<ID> 3 </ID>
+			<Name> UTIL_IDLE_BURSTY </Name>
+			<WLTType> 3 </WLTType>
+			<ActiveCPUs> * </ActiveCPUs>
+		</State>
+	</States>
 
+</Configuration>
